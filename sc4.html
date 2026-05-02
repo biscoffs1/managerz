@@ -1879,12 +1879,13 @@
             const dummyTimestampProjects = new Set([...displayedProjectPaths].filter(p => !selectedProjectPaths.has(p)));
 
             let scriptLines = [
-                '\$PSScriptRoot = Split-Path -Parent -Path \"$MyInvocation.MyCommand.Definition\"',
+                'if (-not \$PSScriptRoot) { \$PSScriptRoot = Split-Path -Parent -Path \$MyInvocation.MyCommand.Definition -ErrorAction SilentlyContinue }',
+                'if (-not \$PSScriptRoot) { \$PSScriptRoot = \".\" }',
                 '\$wshell = New-Object -ComObject WScript.Shell',
                 '',
                 'function Process-Video {',
                 '    param([string]\$sourcePath, [string]\$targetPath, [array]\$cuts, [array]\$markers)',
-                '    \$tempDir = Join-Path -Path \"$env\":TEMP -ChildPath ([System.Guid]::NewGuid().ToString())',
+                '    \$tempDir = Join-Path -Path \$env:TEMP -ChildPath ([System.Guid]::NewGuid().ToString())',
                 '    New-Item -ItemType Directory -Path \"$tempDir\" | Out-Null',
                 '    ',
                 '    \$baseName = [System.IO.Path]::GetFileNameWithoutExtension(\$sourcePath)',
@@ -1981,6 +1982,28 @@
                 '        \$content = @()',
                 '        foreach (\$key in \$data.Keys) { \$content += ("{0}:{1}" -f \$key, \$data[\$key]) }',
                 '        \$content | Out-File -FilePath \"$filePath\" -Encoding utf8',
+                '    }',
+                '}',
+                '',
+                'function Verify-Shortcuts {',
+                '    Write-Host "`n--- Verifying Shortcuts ---" -ForegroundColor Cyan',
+                '    \$scFolders = Get-ChildItem -Path \$PSScriptRoot -Recurse -Directory -Filter "sc"',
+                '    if (\$scFolders) {',
+                '        foreach (\$folder in \$scFolders) {',
+                '            \$links = Get-ChildItem -Path \$folder.FullName -File -Filter "*.lnk"',
+                '            foreach (\$link in \$links) {',
+                '                try {',
+                '                    \$target = \$wshell.CreateShortcut(\$link.FullName).TargetPath',
+                '                    if (-not (Test-Path -LiteralPath \$target)) {',
+                '                        Write-Host "BROKEN: \$(\$link.FullName) -> \$target" -ForegroundColor Red',
+                '                    } else {',
+                '                        Write-Host "VALID:  \$(\$link.Name)" -ForegroundColor Green',
+                '                    }',
+                '                } catch {',
+                '                    Write-Host "ERROR verifying \$(\$link.Name): \$(\$_.Exception.Message)" -ForegroundColor Yellow',
+                '                }',
+                '            }',
+                '        }',
                 '    }',
                 '}',
                 ''
@@ -2492,6 +2515,7 @@
                 });
             }
 
+            scriptLines.push('Verify-Shortcuts');
             scriptLines.push('Write-Host "Script execution complete."');
             scriptLines.push('Read-Host -Prompt "Press Enter to exit"');
 
@@ -3607,7 +3631,8 @@
             const isPlaylistRootMode = (currentMode === 'playlist-root' || currentMode === 'update-playlist-root');
 
             let scriptLines = [
-                '\$PSScriptRoot = Split-Path -Parent -Path \"$MyInvocation.MyCommand.Definition\"',
+                'if (-not \$PSScriptRoot) { \$PSScriptRoot = Split-Path -Parent -Path \$MyInvocation.MyCommand.Definition -ErrorAction SilentlyContinue }',
+                'if (-not \$PSScriptRoot) { \$PSScriptRoot = \".\" }',
                 '\$script:playlistContent = New-Object System.Collections.Generic.List[string]',
                 '\$script:playlistContent.Add("#EXTM3U")',
                 '\$script:addedTargets = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)',
@@ -3643,6 +3668,28 @@
                 '        }',
                 '    }',
                 '    return \$map',
+                '}',
+                '',
+                'function Verify-Shortcuts {',
+                '    Write-Host "`n--- Verifying Shortcuts ---" -ForegroundColor Cyan',
+                '    \$scFolders = Get-ChildItem -Path \$PSScriptRoot -Recurse -Directory -Filter "sc"',
+                '    if (\$scFolders) {',
+                '        foreach (\$folder in \$scFolders) {',
+                '            \$links = Get-ChildItem -Path \$folder.FullName -File -Filter "*.lnk"',
+                '            foreach (\$link in \$links) {',
+                '                try {',
+                '                    \$target = \$wshell.CreateShortcut(\$link.FullName).TargetPath',
+                '                    if (-not (Test-Path -LiteralPath \$target)) {',
+                '                        Write-Host "BROKEN: \$(\$link.FullName) -> \$target" -ForegroundColor Red',
+                '                    } else {',
+                '                        Write-Host "VALID:  \$(\$link.Name)" -ForegroundColor Green',
+                '                    }',
+                '                } catch {',
+                '                    Write-Host "ERROR verifying \$(\$link.Name): \$(\$_.Exception.Message)" -ForegroundColor Yellow',
+                '                }',
+                '            }',
+                '        }',
+                '    }',
                 '}',
                 ''
             ];
@@ -3825,6 +3872,7 @@
             scriptLines.push('    Write-Host "Updated MPV autorotate script at: \$luaPath"');
             scriptLines.push('}');
 
+            scriptLines.push('Verify-Shortcuts');
             scriptLines.push('Write-Host "Total items in playlist: \$(\$script:playlistContent.Count - 1)"');
             scriptLines.push('Read-Host -Prompt "Press Enter to exit"');
 
