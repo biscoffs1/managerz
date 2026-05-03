@@ -1879,20 +1879,22 @@
             const dummyTimestampProjects = new Set([...displayedProjectPaths].filter(p => !selectedProjectPaths.has(p)));
 
             let scriptLines = [
-                '\$PSScriptRoot = Split-Path -Parent -Path \"$MyInvocation.MyCommand.Definition\"',
+                'if (\$PSScriptRoot) { \$BaseDir = \$PSScriptRoot }',
+                'else { \$BaseDir = Split-Path -Parent -Path \$MyInvocation.MyCommand.Definition -ErrorAction SilentlyContinue }',
+                'if (-not \$BaseDir) { \$BaseDir = "." }',
                 '\$wshell = New-Object -ComObject WScript.Shell',
+                '\$newShortcuts = @()',
                 '',
                 'function Process-Video {',
                 '    param([string]\$sourcePath, [string]\$targetPath, [array]\$cuts, [array]\$markers)',
-                '    \$tempDir = Join-Path -Path \"$env\":TEMP -ChildPath ([System.Guid]::NewGuid().ToString())',
-                '    New-Item -ItemType Directory -Path \"$tempDir\" | Out-Null',
+                '    if (-not \$sourcePath -or -not (Test-Path -LiteralPath \$sourcePath)) { Write-Host "Source path empty or invalid: \$sourcePath"; return }',
+                '    \$tempDir = Join-Path -Path \$env:TEMP -ChildPath ([System.Guid]::NewGuid().ToString())',
+                '    New-Item -ItemType Directory -Path "\$tempDir" | Out-Null',
                 '    ',
                 '    \$baseName = [System.IO.Path]::GetFileNameWithoutExtension(\$sourcePath)',
                 '    \$safeBase = \$baseName -replace "[^a-zA-Z0-9_]", "_"',
                 '    ',
-                '    # Simplified logic: if no cuts and only one rotation, just use one segment.',
-                '    # For full implementation, we need timeline points.',
-                '    \$duration = (ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "\"$sourcePath"") -as [double]',
+                '    \$duration = (ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "\$sourcePath") -as [double]',
                 '    ',
                 '    \$points = New-Object System.Collections.Generic.List[double]',
                 '    \$points.Add(0)',
@@ -1907,7 +1909,7 @@
                 '    \$maxH = 0',
                 '    ',
                 '    # Probe for initial dimensions',
-                '    \$metadata = (ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "\"$sourcePath"") -split "x"',
+                '    \$metadata = (ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "\$sourcePath") -split "x"',
                 '    \$sw = [int]\$metadata[0]',
                 '    \$sh = [int]\$metadata[1]',
                 '    ',
@@ -1924,11 +1926,10 @@
                 '        \$rotation = 0',
                 '        foreach (\$m in \$markers) { if (\$start -ge \$m.time) { \$rotation = \$m.rotation } }',
                 '        ',
-                '        \$curW = \$sw',
-                '        \$curH = \$sh',
                 '        if (\$rotation -eq 90 -or \$rotation -eq 270) {',
-                '            \$curW = \$sh',
-                '            \$curH = \$sw',
+                '            \$curW = \$sh; \$curH = \$sw',
+                '        } else {',
+                '            \$curW = \$sw; \$curH = \$sh',
                 '        }',
                 '        if (\$curW -gt \$maxW) { \$maxW = \$curW }',
                 '        if (\$curH -gt \$maxH) { \$maxH = \$curH }',
@@ -1942,33 +1943,33 @@
                 '    \$maxW = [Math]::Ceiling(\$maxW / 2) * 2',
                 '    \$maxH = [Math]::Ceiling(\$maxH / 2) * 2',
                 '    ',
-                '    \$listPath = Join-Path -Path \"$tempDir\" -ChildPath "list.txt"',
+                '    \$listPath = Join-Path -Path \$tempDir -ChildPath "list.txt"',
                 '    \$segIndex = 0',
                 '    foreach (\$seg in \$segments) {',
-                '        \$outSeg = Join-Path -Path \"$tempDir\" -ChildPath ("seg{0:D3}.mp4" -f \$segIndex++)',
+                '        \$outSeg = Join-Path -Path \$tempDir -ChildPath ("seg{0:D3}.mp4" -f \$segIndex++)',
                 '        \$transpose = ""',
                 '        if (\$seg.rotation -eq 90) { \$transpose = "transpose=1," }',
                 '        elseif (\$seg.rotation -eq 180) { \$transpose = "transpose=1,transpose=1," }',
                 '        elseif (\$seg.rotation -eq 270) { \$transpose = "transpose=2," }',
                 '        ',
-                '        # Scale and pad to match max dimensions to allow concatenation',
-                '        \$vf = "\$transpose" + "scale=(iw*sar)*min(\${maxW}/(iw*sar)\\\,\${maxH}/ih):ih*min(\${maxW}/(iw*sar)\\\,\${maxH}/ih),pad=\${maxW}:\${maxH}:(\${maxW}-iw*min(\${maxW}/iw\\\,\${maxH}/ih))/2:(\${maxH}-ih*min(\${maxW}/iw\\\,\${maxH}/ih))/2"',
+                '        # Use braces for variables in vf to avoid ParserError with colons',
+                '        \$vf = "\${transpose}scale=w=\${maxW}:h=\${maxH}:force_original_aspect_ratio=decrease,pad=\${maxW}:\${maxH}:(ow-iw)/2:(oh-ih)/2"',
                 '        ',
-                '        \$dur = \$seg.end - \$seg.start',
-                '        ffmpeg -y -i \"$sourcePath\" -ss \$seg.start -t \$dur -vf "\$vf" -c:v libx264 -crf 17 -preset fast -c:a copy -avoid_negative_ts make_zero "\$outSeg" 2>\$null',
-                '        (echo "file \'$outSeg\'") | Out-File -FilePath "$listPath" -Append -Encoding utf8',
+                '        \$dur = (\$seg.end - \$seg.start).ToString("F3")',
+                '        ffmpeg -y -i "\$sourcePath" -ss \$seg.start.ToString("F3") -t \$dur -vf "\$vf" -c:v libx264 -crf 17 -preset veryslow -c:a copy -avoid_negative_ts make_zero "\$outSeg" 2>\$null',
+                '        (echo "file '\$outSeg'") | Out-File -FilePath "\$listPath" -Append -Encoding utf8',
                 '    }',
                 '    ',
-                '    ffmpeg -y -f concat -safe 0 -i \"$listPath\" -c copy "\$targetPath" 2>\$null',
-                '    Remove-Item -Path \"$tempDir\" -Recurse -Force',
+                '    ffmpeg -y -f concat -safe 0 -i "\$listPath" -c copy "\$targetPath" 2>\$null',
+                '    Remove-Item -Path "\$tempDir" -Recurse -Force',
                 '}',
                 '',
                 'function Update-RotationData {',
                 '    param([string]\$filePath, [hashtable]\$toAdd, [string[]]\$toRemove)',
                 '    \$data = @{}',
-                '    if (Test-Path -LiteralPath \"$filePath\") {',
-                '        Get-Content -LiteralPath \"$filePath\" | ForEach-Object {',
-                '            if (\$_ -match "^(.*?):(.*)$") {',
+                '    if (Test-Path -LiteralPath "\$filePath") {',
+                '        Get-Content -LiteralPath "\$filePath" | ForEach-Object {',
+                '            if (\$_ -match "^(.*?):(.*)\$") {',
                 '                \$data[\$matches[1]] = \$matches[2]',
                 '            }',
                 '        }',
@@ -1976,11 +1977,33 @@
                 '    foreach (\$key in \$toRemove) { \$data.Remove(\$key) }',
                 '    foreach (\$key in \$toAdd.Keys) { \$data[\$key] = \$toAdd[\$key] }',
                 '    if (\$data.Count -eq 0) {',
-                '        if (Test-Path -LiteralPath \"$filePath\") { Remove-Item -LiteralPath \"$filePath\" }',
+                '        if (Test-Path -LiteralPath "\$filePath") { Remove-Item -LiteralPath "\$filePath" }',
                 '    } else {',
                 '        \$content = @()',
                 '        foreach (\$key in \$data.Keys) { \$content += ("{0}:{1}" -f \$key, \$data[\$key]) }',
-                '        \$content | Out-File -FilePath \"$filePath\" -Encoding utf8',
+                '        \$content | Out-File -FilePath "\$filePath" -Encoding utf8',
+                '    }',
+                '}',
+                '',
+                'function Verify-Shortcuts {',
+                '    param([array]\$shortcutPaths)',
+                '    if (-not \$shortcutPaths) { return }',
+                '    Write-Host "`n--- Verifying Touched Shortcuts ---" -ForegroundColor Cyan',
+                '    foreach (\$path in \$shortcutPaths) {',
+                '        if (Test-Path -LiteralPath \$path) {',
+                '            try {',
+                '                \$target = \$wshell.CreateShortcut(\$path).TargetPath',
+                '                if (-not (Test-Path -LiteralPath \$target)) {',
+                '                    Write-Host "BROKEN: \$path -> \$target" -ForegroundColor Red',
+                '                } else {',
+                '                    Write-Host "VALID:  \$([System.IO.Path]::GetFileName(\$path))" -ForegroundColor Green',
+                '                }',
+                '            } catch {',
+                '                Write-Host "ERROR verifying \$([System.IO.Path]::GetFileName(\$path)): \$(\$_.Exception.Message)" -ForegroundColor Yellow',
+                '            }',
+                '        } else {',
+                '            Write-Host "MISSING: \$path" -ForegroundColor Red',
+                '        }',
                 '    }',
                 '}',
                 ''
@@ -1996,12 +2019,12 @@
                     const escapedTargetProjectPath = escapePSString(sel.targetProject);
                     const escapedSubfolder = escapePSString(sel.subfolder);
                     
-                    let sourceVideoPathVar = '\$PSScriptRoot';
+                    let sourceVideoPathVar = '\$BaseDir';
                     if (escapedSourceProjectPath) sourceVideoPathVar = `(Join-Path -Path ${sourceVideoPathVar} -ChildPath '${escapedSourceProjectPath}')`;
                     if (escapedSubfolder) sourceVideoPathVar = `(Join-Path -Path ${sourceVideoPathVar} -ChildPath '${escapedSubfolder}')`;
                     scriptLines.push(`\$sourceVideoPath = Join-Path -Path ${sourceVideoPathVar} -ChildPath '${escapedVideoName}'`);
                     
-                    let targetVideoPathVar = `(Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedTargetProjectPath}')`;
+                    let targetVideoPathVar = `(Join-Path -Path \"$BaseDir\" -ChildPath '${escapedTargetProjectPath}')`;
                     scriptLines.push(`\$targetVideoPath = Join-Path -Path ${targetVideoPathVar} -ChildPath '${escapedVideoName}'`);
                     
                     scriptLines.push('if (Test-Path -LiteralPath \"$sourceVideoPath\") {');
@@ -2012,8 +2035,8 @@
                     const thumbBase = sel.videoName.substring(0, sel.videoName.lastIndexOf('.'));
                     const escapedThumbBase = escapePSString(thumbBase);
                     
-                    scriptLines.push(`\$sourceProjectPath = ${escapedSourceProjectPath ? `Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedSourceProjectPath}'` : '\$PSScriptRoot'}`);
-                    scriptLines.push(`\$targetProjectPath = Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedTargetProjectPath}'`);
+                    scriptLines.push(`\$sourceProjectPath = ${escapedSourceProjectPath ? `Join-Path -Path \"$BaseDir\" -ChildPath '${escapedSourceProjectPath}'` : '\$BaseDir'}`);
+                    scriptLines.push(`\$targetProjectPath = Join-Path -Path \"$BaseDir\" -ChildPath '${escapedTargetProjectPath}'`);
                     scriptLines.push(`\$thumbDirs = @('Thumbnails', 'Edit Thumbnails')`);
                     scriptLines.push(`foreach (\$dirName in \$thumbDirs) {`);
                     scriptLines.push(`    \$srcDirPath = Join-Path -Path \"$sourceProjectPath\" -ChildPath \$dirName`);
@@ -2041,7 +2064,7 @@
                     scriptLines.push(`}`);
 
                     // Update root shortcuts if they exist
-                    scriptLines.push(`\$rootScPath = Join-Path -Path \"$PSScriptRoot\" -ChildPath 'sc'`);
+                    scriptLines.push(`\$rootScPath = Join-Path -Path \"$BaseDir\" -ChildPath 'sc'`);
                     scriptLines.push(`\$rootScFile = Join-Path -Path \"$rootScPath\" -ChildPath \$scFileName`);
                     scriptLines.push(`if (Test-Path -LiteralPath \"$rootScFile\") {`);
                     scriptLines.push(`    \$shortcut = \$wshell.CreateShortcut(\$rootScFile)`);
@@ -2078,7 +2101,7 @@
             });
 
             if (needsRootSc) {
-                scriptLines.push('\$rootScFolder = Join-Path -Path \"$PSScriptRoot\" -ChildPath \'sc\'');
+                scriptLines.push('\$rootScFolder = Join-Path -Path \"$BaseDir\" -ChildPath \'sc\'');
                 scriptLines.push('if (-not (Test-Path -Path \"$rootScFolder\")) { New-Item -ItemType Directory -Path \"$rootScFolder\" -Force | Out-Null }');
                 scriptLines.push('');
             }
@@ -2086,9 +2109,9 @@
             subfolderProjects.forEach(projectPath => {
                 const escapedProjectPath = escapePSString(projectPath);
                 if (escapedProjectPath) {
-                    scriptLines.push(`\$subfolderScPath = Join-Path -Path (Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedProjectPath}') -ChildPath 'sc'`);
+                    scriptLines.push(`\$subfolderScPath = Join-Path -Path (Join-Path -Path \"$BaseDir\" -ChildPath '${escapedProjectPath}') -ChildPath 'sc'`);
                 } else {
-                    scriptLines.push('\$subfolderScPath = Join-Path -Path \"$PSScriptRoot\" -ChildPath \'sc\'');
+                    scriptLines.push('\$subfolderScPath = Join-Path -Path \"$BaseDir\" -ChildPath \'sc\'');
                 }
                 scriptLines.push('if (-not (Test-Path -Path \"$subfolderScPath\")) { New-Item -ItemType Directory -Path \"$subfolderScPath\" -Force | Out-Null }');
             });
@@ -2097,7 +2120,7 @@
             targetProjects.forEach(projectPath => {
                 if (!subfolderProjects.has(projectPath)) {
                     const escapedProjectPath = escapePSString(projectPath);
-                    scriptLines.push(`\$subfolderScPath = Join-Path -Path (Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedProjectPath}') -ChildPath 'sc'`);
+                    scriptLines.push(`\$subfolderScPath = Join-Path -Path (Join-Path -Path \"$BaseDir\" -ChildPath '${escapedProjectPath}') -ChildPath 'sc'`);
                     scriptLines.push('if (-not (Test-Path -Path \"$subfolderScPath\")) { New-Item -ItemType Directory -Path \"$subfolderScPath\" -Force | Out-Null }');
                 }
             });
@@ -2125,7 +2148,7 @@
 
                 if (hasEdits) {
                     scriptLines.push(`    # Processing edits for: ${sel.projectPath}\\${sel.videoName}`);
-                    let sourcePathVar = '\$PSScriptRoot';
+                    let sourcePathVar = '\$BaseDir';
                     if (escapedProjectPath) sourcePathVar = `(Join-Path -Path ${sourcePathVar} -ChildPath '${escapedProjectPath}')`;
                     if (escapedSubfolder) sourcePathVar = `(Join-Path -Path ${sourcePathVar} -ChildPath '${escapedSubfolder}')`;
                     scriptLines.push(`    \$sourceVideoPath = Join-Path -Path ${sourcePathVar} -ChildPath '${escapedVideoName}'`);
@@ -2151,13 +2174,13 @@
                     // Clear rotation metadata for this file since it's now burnt-in
                     const projPath = sel.projectPath;
                     const escapedProjPath = escapePSString(projPath);
-                    const projPathVar = escapedProjPath ? `(Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedProjPath}')` : '\$PSScriptRoot';
+                    const projPathVar = escapedProjPath ? `(Join-Path -Path \"$BaseDir\" -ChildPath '${escapedProjPath}')` : '\$BaseDir';
                     const rotFileVar = `(Join-Path -Path ${projPathVar} -ChildPath 'rotation_data.txt')`;
                     scriptLines.push(`        Update-RotationData -filePath ${rotFileVar} -toAdd @{} -toRemove @('${escapedVideoName}')`);
                     scriptLines.push(`    }`);
                 }
 
-                let targetPathConstruction = '\$PSScriptRoot';
+                let targetPathConstruction = '\$BaseDir';
                 if (escapedTargetProjectPath !== null) {
                     if (escapedTargetProjectPath !== '') {
                         targetPathConstruction = `(Join-Path -Path ${targetPathConstruction} -ChildPath '${escapedTargetProjectPath}')`;
@@ -2201,9 +2224,9 @@
                         let scDirPath;
                         const projectPathToUse = escapedTargetProjectPath || escapedProjectPath;
                         if (projectPathToUse) {
-                            scDirPath = `Join-Path -Path (Join-Path -Path \"$PSScriptRoot\" -ChildPath '${projectPathToUse}') -ChildPath 'sc'`;
+                            scDirPath = `Join-Path -Path (Join-Path -Path \"$BaseDir\" -ChildPath '${projectPathToUse}') -ChildPath 'sc'`;
                         } else {
-                            scDirPath = 'Join-Path -Path \"$PSScriptRoot\" -ChildPath \'sc\'';
+                            scDirPath = 'Join-Path -Path \"$BaseDir\" -ChildPath \'sc\'';
                         }
                         const logPath = (escapedProjectPath ? escapedProjectPath + '\\' : '') + escapedVideoName;
                         createShortcut(`Join-Path -Path (${scDirPath}) -ChildPath ('${escapedVideoName}' + '.lnk')`, `Created subfolder shortcut: ${logPath}`);
@@ -2221,7 +2244,7 @@
                     const escapedProjectPath = escapePSString(sel.projectPath);
                     const escapedSubfolder = escapePSString(sel.subfolder);
                     
-                    let videoPathVar = '\$PSScriptRoot';
+                    let videoPathVar = '\$BaseDir';
                     if (escapedProjectPath) videoPathVar = `(Join-Path -Path ${videoPathVar} -ChildPath '${escapedProjectPath}')`;
                     if (escapedSubfolder) videoPathVar = `(Join-Path -Path ${videoPathVar} -ChildPath '${escapedSubfolder}')`;
                     scriptLines.push(`\$videoPath = Join-Path -Path ${videoPathVar} -ChildPath '${escapedVideoName}'`);
@@ -2234,9 +2257,9 @@
                     const thumbBase = sel.videoName.substring(0, sel.videoName.lastIndexOf('.'));
                     const escapedThumbBase = escapePSString(thumbBase);
                     
-                    let projectPathVar = '\$PSScriptRoot';
+                    let projectPathVar = '\$BaseDir';
                     if (escapedProjectPath) {
-                        projectPathVar = `Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedProjectPath}'`;
+                        projectPathVar = `Join-Path -Path \"$BaseDir\" -ChildPath '${escapedProjectPath}'`;
                     }
                     scriptLines.push(`\$projectPath = ${projectPathVar}`);
                     scriptLines.push(`\$thumbDirs = @('Thumbnails', 'Edit Thumbnails')`);
@@ -2266,9 +2289,9 @@
                 if (initiallyInSubfolder && !currentlyInSubfolder) {
                     let subfolderScPath;
                     if (escapedProjectPath) {
-                        subfolderScPath = `(Join-Path -Path (Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedProjectPath}') -ChildPath 'sc')`;
+                        subfolderScPath = `(Join-Path -Path (Join-Path -Path \"$BaseDir\" -ChildPath '${escapedProjectPath}') -ChildPath 'sc')`;
                     } else {
-                        subfolderScPath = '(Join-Path -Path \"$PSScriptRoot\" -ChildPath \'sc\')';
+                        subfolderScPath = '(Join-Path -Path \"$BaseDir\" -ChildPath \'sc\')';
                     }
                     const fullScPath = `(Join-Path -Path ${subfolderScPath} -ChildPath ('${escapedVideoName}' + '.lnk'))`;
                     const logPath = (escapedProjectPath ? escapedProjectPath + '\\' : '') + escapedVideoName;
@@ -2278,7 +2301,7 @@
                 const initiallyInRoot = initial.type === 'root-sc' || initial.type === 'both-sc';
                 const currentlyInRoot = current && (current.type === 'root-sc' || current.type === 'both-sc');
                 if (initiallyInRoot && !currentlyInRoot) {
-                    const rootScFolder = `(Join-Path -Path \"$PSScriptRoot\" -ChildPath 'sc')`;
+                    const rootScFolder = `(Join-Path -Path \"$BaseDir\" -ChildPath 'sc')`;
                     const fullScPath = `(Join-Path -Path ${rootScFolder} -ChildPath ('${escapedVideoName}' + '.lnk'))`;
                     deletions.push(`if (Test-Path -LiteralPath "${fullScPath}") { Remove-Item -LiteralPath "${fullScPath}"; Write-Host "Deleted root shortcut: ${escapedVideoName}" }`);
                 }
@@ -2336,7 +2359,7 @@
                 scriptLines.push('# --- Updating Rotation Data ---');
                 rotationUpdates.forEach((update, projectPath) => {
                     const escapedProjectPath = escapePSString(projectPath);
-                    const projectPathVar = escapedProjectPath ? `(Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedProjectPath}')` : '\$PSScriptRoot';
+                    const projectPathVar = escapedProjectPath ? `(Join-Path -Path \"$BaseDir\" -ChildPath '${escapedProjectPath}')` : '\$BaseDir';
                     const rotationFileVar = `(Join-Path -Path ${projectPathVar} -ChildPath 'rotation_data.txt')`;
                     
                     scriptLines.push(`\$toAdd = @{`);
@@ -2467,7 +2490,7 @@
                 
                 selectedProjectPaths.forEach(projectPath => {
                     const escapedProjectPath = escapePSString(projectPath);
-                    const projectPathVar = escapedProjectPath ? `Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedProjectPath}'` : '\$PSScriptRoot';
+                    const projectPathVar = escapedProjectPath ? `Join-Path -Path \"$BaseDir\" -ChildPath '${escapedProjectPath}'` : '\$BaseDir';
 
                     scriptLines.push(`Write-Host "Placing genuine timestamp for project: ${projectPath || '(Root)'}"`);
                     scriptLines.push(`\$projectFolder = ${projectPathVar}`);
@@ -2482,7 +2505,7 @@
                 
                 dummyTimestampProjects.forEach(projectPath => {
                     const escapedProjectPath = escapePSString(projectPath);
-                    const projectPathVar = escapedProjectPath ? `Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedProjectPath}'` : '\$PSScriptRoot';
+                    const projectPathVar = escapedProjectPath ? `Join-Path -Path \"$BaseDir\" -ChildPath '${escapedProjectPath}'` : '\$BaseDir';
 
                     scriptLines.push(`Write-Host "Placing dummy timestamp for project: ${projectPath || '(Root)'}"`);
                     scriptLines.push(`\$projectFolder = ${projectPathVar}`);
@@ -2491,6 +2514,7 @@
                     scriptLines.push('');
                 });
             }
+
 
             scriptLines.push('Write-Host "Script execution complete."');
             scriptLines.push('Read-Host -Prompt "Press Enter to exit"');
@@ -3607,17 +3631,20 @@
             const isPlaylistRootMode = (currentMode === 'playlist-root' || currentMode === 'update-playlist-root');
 
             let scriptLines = [
-                '\$PSScriptRoot = Split-Path -Parent -Path \"$MyInvocation.MyCommand.Definition\"',
+                'if (\$PSScriptRoot) { \$BaseDir = \$PSScriptRoot }',
+                'else { \$BaseDir = Split-Path -Parent -Path \$MyInvocation.MyCommand.Definition -ErrorAction SilentlyContinue }',
+                'if (-not \$BaseDir) { \$BaseDir = "." }',
                 '\$script:playlistContent = New-Object System.Collections.Generic.List[string]',
                 '\$script:playlistContent.Add("#EXTM3U")',
                 '\$script:addedTargets = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)',
                 '\$script:rotatedFiles = @{}',
                 '\$wshell = New-Object -ComObject WScript.Shell',
-                "\$rootScFolder = [System.IO.Path]::GetFullPath((Join-Path -Path \"$PSScriptRoot\" -ChildPath 'sc'))",
+                '\$newShortcuts = @()',
+                '\$rootScFolder = [System.IO.Path]::GetFullPath((Join-Path -Path \$BaseDir -ChildPath \'sc\'))',
                 '',
                 'function Add-PlaylistEntry {',
                 '    param([string]\$path, [string]\$rotation, [int]\$multiplier, [string]\$rotationKey)',
-                '    \$fullPath = [System.IO.Path]::GetFullPath((Join-Path -Path \"$PSScriptRoot\" -ChildPath \$path))',
+                '    \$fullPath = [System.IO.Path]::GetFullPath((Join-Path -Path \$BaseDir -ChildPath \$path))',
                 '    \$key = if (\$rotationKey) { \$rotationKey } else { [System.IO.Path]::GetFileName(\$fullPath) }',
                 '    if (\$script:addedTargets.Add(\$fullPath)) {',
                 '        if (\$rotation -and \$rotation -ne "0") {',
@@ -3627,22 +3654,45 @@
                 '            \$script:playlistContent.Add(\$path)',
                 '        }',
                 '    } elseif (\$rotation -and \$rotation -ne "0") {',
-                '        \$script:rotatedFiles[\$key] = \$rotation',
+                '        \$rotationVal = if (\$rotation -match "^(\\d+)") { \$matches[1] } else { "0" }',
+                '        \$script:rotatedFiles[\$key] = \$rotationVal',
                 '    }',
                 '}',
                 '',
                 'function Get-RotationDataMap {',
                 '    param([string]\$projectPath)',
                 '    \$map = @{}',
-                '    \$rotFile = Join-Path -Path \"$projectPath\" -ChildPath "rotation_data.txt"',
-                '    if (Test-Path -LiteralPath \"$rotFile\") {',
-                '        Get-Content -LiteralPath \"$rotFile\" | ForEach-Object {',
-                '            if (\$_ -match "^(.*?):(\\d+)$") {',
+                '    \$rotFile = Join-Path -Path "\$projectPath" -ChildPath "rotation_data.txt"',
+                '    if (Test-Path -LiteralPath "\$rotFile") {',
+                '        Get-Content -LiteralPath "\$rotFile" | ForEach-Object {',
+                '            if (\$_ -match "^(.*?):(.*)\$") {',
                 '                \$map[\$matches[1].ToLower()] = \$matches[2]',
                 '            }',
                 '        }',
                 '    }',
                 '    return \$map',
+                '}',
+                '',
+                'function Verify-Shortcuts {',
+                '    param([array]\$shortcutPaths)',
+                '    if (-not \$shortcutPaths) { return }',
+                '    Write-Host "`n--- Verifying Touched Shortcuts ---" -ForegroundColor Cyan',
+                '    foreach (\$path in \$shortcutPaths) {',
+                '        if (Test-Path -LiteralPath \$path) {',
+                '            try {',
+                '                \$target = \$wshell.CreateShortcut(\$path).TargetPath',
+                '                if (-not (Test-Path -LiteralPath \$target)) {',
+                '                    Write-Host "BROKEN: \$path -> \$target" -ForegroundColor Red',
+                '                } else {',
+                '                    Write-Host "VALID:  \$([System.IO.Path]::GetFileName(\$path))" -ForegroundColor Green',
+                '                }',
+                '            } catch {',
+                '                Write-Host "ERROR verifying \$([System.IO.Path]::GetFileName(\$path)): \$(\$_.Exception.Message)" -ForegroundColor Yellow',
+                '            }',
+                '        } else {',
+                '            Write-Host "MISSING: \$path" -ForegroundColor Red',
+                '        }',
+                '    }',
                 '}',
                 ''
             ];
@@ -3698,7 +3748,7 @@
                         scriptLines.push(`Add-PlaylistEntry -path \$targetPath -rotation '${rotation}' -multiplier ${multiplier} -rotationKey '${escapedVideoName}'`);
                         scriptLines.push(`Write-Host "Added to playlist (shortcut): ${escapedVideoName} (${multiplier}x)"`);
                     } else {
-                        let targetPathConstruction = '\$PSScriptRoot';
+                        let targetPathConstruction = '\$BaseDir';
                         if (sel.projectPath) {
                             targetPathConstruction = `(Join-Path -Path ${targetPathConstruction} -ChildPath '${escapedProjectPath}')`;
                         }
@@ -3721,7 +3771,7 @@
                 rootScSelections.forEach(sel => {
                     const escapedProjectPath = escapePSString(sel.projectPath);
                     const multiplier = sel.multiplier || 1;
-                    scriptLines.push(`\$rootSelections['' + [System.IO.Path]::GetFullPath((Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedProjectPath}'))] = ${multiplier}`);
+                    scriptLines.push(`\$rootSelections['' + [System.IO.Path]::GetFullPath((Join-Path -Path \"$BaseDir\" -ChildPath '${escapedProjectPath}'))] = ${multiplier}`);
                 });
 
                 scriptLines.push('if (Test-Path -LiteralPath \"$rootScFolder\") {');
@@ -3753,9 +3803,9 @@
                 subfolderScSelections.forEach(sel => {
                     const escapedProjectPath = escapePSString(sel.projectPath);
                     const multiplier = sel.multiplier || 1;
-                    let projectPathVar = '\$PSScriptRoot';
+                    let projectPathVar = '\$BaseDir';
                     if (sel.projectPath) {
-                        projectPathVar = `Join-Path -Path \"$PSScriptRoot\" -ChildPath '${escapedProjectPath}'`;
+                        projectPathVar = `Join-Path -Path \"$BaseDir\" -ChildPath '${escapedProjectPath}'`;
                     }
                     scriptLines.push(`\$subfolderSelections['' + [System.IO.Path]::GetFullPath((${projectPathVar}))] = ${multiplier}`);
                 });
@@ -3778,7 +3828,7 @@
                 scriptLines.push('');
             }
 
-            scriptLines.push('\$playlistPath = Join-Path -Path \"$PSScriptRoot\" -ChildPath "playlist.m3u"');
+            scriptLines.push('\$playlistPath = Join-Path -Path \"$BaseDir\" -ChildPath "playlist.m3u"');
             scriptLines.push('\$script:playlistContent | Out-File -FilePath \"$playlistPath\" -Encoding utf8');
             scriptLines.push('Write-Host "Playlist created at: \$playlistPath"');
 
@@ -3824,6 +3874,7 @@
             scriptLines.push('    \$luaContent | Out-File -FilePath \"$luaPath\" -Encoding utf8');
             scriptLines.push('    Write-Host "Updated MPV autorotate script at: \$luaPath"');
             scriptLines.push('}');
+
 
             scriptLines.push('Write-Host "Total items in playlist: \$(\$script:playlistContent.Count - 1)"');
             scriptLines.push('Read-Host -Prompt "Press Enter to exit"');
