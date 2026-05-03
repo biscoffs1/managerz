@@ -750,8 +750,8 @@
         let allVideoFiles = [];
         let allProjectFolders = [];
         const skipDirs = new Set(['edit thumbnails', 'thumbnails', 'sc', '.git', 'node_modules', 'recovery', '$recycle.bin', 'system volume information']);
-        let shortcutSelections = new Map(); // Key: projectPath + '|' + videoName, Value: { videoName, projectPath, subfolder, type, rotation }
-        let initialShortcutSelections = new Map(); // Key: projectPath + '|' + videoName, Value: { type, rotation }
+        window.shortcutSelections = new Map(); // Key: projectPath + '|' + videoName, Value: { videoName, projectPath, subfolder, type, rotation }
+        window.initialShortcutSelections = new Map(); // Key: projectPath + '|' + videoName, Value: { type, rotation }
         let currentDirHandle;
         let g_rootHandle;
         let currentMode = '';
@@ -1957,7 +1957,7 @@
                 '        ',
                 '        \$dur = (\$seg.end - \$seg.start).ToString("F3")',
                 '        ffmpeg -y -i "\$sourcePath" -ss \$seg.start.ToString("F3") -t \$dur -vf "\$vf" -c:v libx264 -crf 17 -preset veryslow -c:a copy -avoid_negative_ts make_zero "\$outSeg" 2>\$null',
-                '        (echo "file '\$outSeg'") | Out-File -FilePath "\$listPath" -Append -Encoding utf8',
+                '        (echo "file \'\$outSeg\'") | Out-File -FilePath "\$listPath" -Append -Encoding utf8',
                 '    }',
                 '    ',
                 '    ffmpeg -y -f concat -safe 0 -i "\$listPath" -c copy "\$targetPath" 2>\$null',
